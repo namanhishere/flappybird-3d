@@ -1,0 +1,277 @@
+name: Build
+
+# Every push to the default branch exports the three desktop targets from
+# export_presets.cfg and uploads each one as a downloadable artifact. Every
+# version tag additionally attaches the same zips to a GitHub Release.
+#
+# The Godot toolchain is fetched from the official release and verified
+# against SHA512 pins: the Linux editor zip and the export-template archive
+# come from tools/toolchain.env, the macOS editor zip from the release's
+# SHA512-SUMS.txt. tools/setup.sh can stay Linux-only because it only ever
+# serves local `make` targets, which never cross-export from this workflow.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: "4.7.2"
+  GODOT_TEMPLATE_DIR_VERSION: "4.7.2.stable"
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            label: Linux x86_64
+            runner: ubuntu-latest
+            preset: Linux
+            export_path: build/linux/flappy3d
+          - platform: windows
+            label: Windows x86_64
+            runner: ubuntu-latest
+            preset: Windows Desktop
+            export_path: build/windows/Flappy3D.exe
+          - platform: macos
+            label: macOS universal
+            runner: macos-latest
+            preset: macOS
+            export_path: build/macos/Flappy3D.app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache the pinned Godot archives
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/godot-toolchain/downloads
+          key: godot-toolchain-${{ env.GODOT_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install verified Godot ${{ env.GODOT_VERSION }} toolchain
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          GODOT_TAG="${GODOT_VERSION}-stable"
+          RELEASE_BASE="https://github.com/godotengine/godot/releases/download/${GODOT_TAG}"
+          TPZ="Godot_v${GODOT_TAG}_export_templates.tpz"
+          TPZ_SHA512="ca4d71c4d7b81dfc15d1a98baa07534aa95b03fdda78a0075b06672e1648d2e5f40980c9adc28d23e1b92e732ee7bf3461997aa804af74ec2fcd7a93ccb84079"
+
+          case "$RUNNER_OS" in
+            Linux)
+              EDITOR_ZIP="Godot_v${GODOT_TAG}_linux.x86_64.zip"
+              EDITOR_SHA512="9aa00f7a605200940bce3027a567b782f49bd8e940dd06ae9e987bd65aee1b1467edd56ed84fcdcbdd44354bf613bdbb4e5d2913e925850368e150c59ed54c65"
+              EDITOR_BIN="Godot_v${GODOT_TAG}_linux.x86_64"
+              TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_DIR_VERSION}"
+              ;;
+            macOS)
+              EDITOR_ZIP="Godot_v${GODOT_TAG}_macos.universal.zip"
+              EDITOR_SHA512="38aa16e5bba2083941fc5b3e54be0089bd4cc35e32415f5b9fd9a8a6a7b9818255d44532ea8ef94b5aef56c4b407c2d634fa4f657e4ebe681ebbf59b7bac69ca"
+              EDITOR_BIN="Godot.app/Contents/MacOS/Godot"
+              TEMPLATE_DIR="$HOME/Library/Application Support/Godot/export_templates/${GODOT_TEMPLATE_DIR_VERSION}"
+              ;;
+            *)
+              echo "Unsupported runner OS: $RUNNER_OS" >&2
+              exit 1
+              ;;
+          esac
+
+          WORK="$RUNNER_TEMP/godot-toolchain"
+          mkdir -p "$WORK/downloads" "$TEMPLATE_DIR"
+
+          sha512_of() {
+            # Linux ships sha512sum; macOS ships shasum.
+            if command -v sha512sum >/dev/null 2>&1; then
+              sha512sum "$1" | cut -d' ' -f1
+            else
+              shasum -a 512 "$1" | cut -d' ' -f1
+            fi
+          }
+
+          fetch_verified() {
+            local url="$1" dest="$2" expected="$3"
+            if [ -f "$dest" ] && [ "$(sha512_of "$dest")" = "$expected" ]; then
+              echo "cached: $(basename "$dest")"
+              return 0
+            fi
+            echo "downloading $(basename "$dest")..."
+            curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 -o "$dest.part" "$url"
+            if [ "$(sha512_of "$dest.part")" != "$expected" ]; then
+              echo "SHA512 mismatch for $(basename "$dest")" >&2
+              exit 1
+            fi
+            mv "$dest.part" "$dest"
+            echo "verified: $(basename "$dest")"
+          }
+
+          fetch_verified "$RELEASE_BASE/$EDITOR_ZIP" "$WORK/downloads/$EDITOR_ZIP" "$EDITOR_SHA512"
+          fetch_verified "$RELEASE_BASE/$TPZ" "$WORK/downloads/$TPZ" "$TPZ_SHA512"
+
+          rm -rf "$WORK/editor"
+          mkdir -p "$WORK/editor"
+          unzip -q -o "$WORK/downloads/$EDITOR_ZIP" -d "$WORK/editor"
+          GODOT_BIN="$WORK/editor/$EDITOR_BIN"
+          chmod +x "$GODOT_BIN"
+          "$GODOT_BIN" --version
+          echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
+
+          case "$MATRIX_PLATFORM" in
+            linux)   MEMBERS="templates/linux_debug.x86_64 templates/linux_release.x86_64" ;;
+            windows) MEMBERS="templates/windows_debug_x86_64.exe templates/windows_release_x86_64.exe" ;;
+            macos)   MEMBERS="templates/macos.zip" ;;
+            *)       echo "Unsupported platform: $MATRIX_PLATFORM" >&2; exit 1 ;;
+          esac
+          # shellcheck disable=SC2086  # unquoted on purpose: one member per template file
+          unzip -q -j -o "$WORK/downloads/$TPZ" $MEMBERS -d "$TEMPLATE_DIR"
+          ls -l "$TEMPLATE_DIR"
+
+      - name: Import project
+        run: |
+          set -euo pipefail
+          "$GODOT_BIN" --headless --path "$GITHUB_WORKSPACE" --import
+
+      - name: Export ${{ matrix.label }}
+        env:
+          PRESET: ${{ matrix.preset }}
+          EXPORT_PATH: ${{ matrix.export_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$EXPORT_PATH")"
+          "$GODOT_BIN" --headless --path "$GITHUB_WORKSPACE" --export-release "$PRESET" "$EXPORT_PATH"
+
+      - name: Verify the exported files are complete
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          case "$MATRIX_PLATFORM" in
+            linux)
+              file build/linux/flappy3d | tee /dev/stderr | grep -q 'ELF 64-bit'
+              ;;
+            windows)
+              file build/windows/Flappy3D.exe | tee /dev/stderr | grep -q 'PE32+'
+              find build/windows -name '*.pck' | grep -q . || { echo "no .pck next to the .exe" >&2; exit 1; }
+              ;;
+            macos)
+              APP="build/macos/Flappy3D.app"
+              find "$APP/Contents/MacOS" -type f | grep -q . || { echo "no executable in the bundle" >&2; exit 1; }
+              find "$APP/Contents/Resources" -name '*.pck' | grep -q . || { echo "no .pck in the bundle" >&2; exit 1; }
+              test -s "$APP/Contents/Info.plist" || { echo "no Info.plist in the bundle" >&2; exit 1; }
+              file "$(find "$APP/Contents/MacOS" -type f | head -n1)" | tee /dev/stderr | grep -q 'Mach-O 64-bit'
+              ;;
+          esac
+          echo "--- exported tree ---"
+          ls -lR build
+
+      - name: Headless smoke test of the exported game
+        if: matrix.platform != 'windows'
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          case "$MATRIX_PLATFORM" in
+            linux) SMOKE_BIN="build/linux/flappy3d" ;;
+            macos) SMOKE_BIN="$(find build/macos/Flappy3D.app/Contents/MacOS -type f | head -n1)" ;;
+          esac
+          mkdir -p build/logs
+          LOG="build/logs/${MATRIX_PLATFORM}-smoke.log"
+          # Same bounds and error gate as tools/godot.sh plus make build-verify:
+          # 180 frames is 3 seconds at the project's 60 Hz physics tick. The
+          # watchdog is a hand-rolled kill because `timeout` is GNU-only and
+          # macOS runners do not ship it.
+          set +e
+          "$SMOKE_BIN" --headless -- --autoplay --frames=180 > "$LOG" 2>&1 &
+          smoke_pid=$!
+          ( sleep 300 && kill -9 "$smoke_pid" 2>/dev/null ) &
+          watchdog_pid=$!
+          wait "$smoke_pid"
+          status=$?
+          kill "$watchdog_pid" 2>/dev/null
+          set -e
+          cat "$LOG"
+          case "$status" in
+            137|143) echo "smoke test timed out ($status)" >&2; exit 1 ;;
+            0) ;;
+            *) echo "smoke test exited $status" >&2; exit "$status" ;;
+          esac
+          if grep -nE 'SCRIPT ERROR|^ERROR:|USER SCRIPT ERROR|USER ERROR' "$LOG"; then
+            echo "smoke test log contains engine errors" >&2
+            exit 1
+          fi
+          echo "smoke test ran clean"
+
+      - name: Package the artifact
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          case "$MATRIX_PLATFORM" in
+            linux)
+              zip -j dist/Flappy3D-linux-x86_64.zip build/linux/flappy3d
+              ;;
+            windows)
+              zip -j dist/Flappy3D-windows-x86_64.zip build/windows/*.exe build/windows/*.pck
+              ;;
+            macos)
+              # ditto keeps bundle permissions, symlinks and extended attributes.
+              ditto -c -k --sequesterRsrc --keepParent build/macos/Flappy3D.app dist/Flappy3D-macos-universal.zip
+              ;;
+          esac
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Flappy3D-${{ matrix.platform }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create the release with the three platform zips
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/*.zip \
+            --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+
+      - name: Confirm the release carries exactly the three expected assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          expected="$(printf '%s\n' \
+            Flappy3D-linux-x86_64.zip \
+            Flappy3D-macos-universal.zip \
+            Flappy3D-windows-x86_64.zip | sort)"
+          actual="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)"
+          if [ "$actual" != "$expected" ]; then
+            echo "release assets do not match the expected three:" >&2
+            printf 'actual:\n%s\nexpected:\n%s\n' "$actual" "$expected" >&2
+            exit 1
+          fi
+          echo "release assets ok"
