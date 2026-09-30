@@ -1,0 +1,87 @@
+[gd_scene load_steps=15 format=3]
+
+[ext_resource type="Script" path="res://scripts/game.gd" id="1_game"]
+[ext_resource type="Script" path="res://scripts/player.gd" id="2_player"]
+[ext_resource type="Script" path="res://scripts/obstacle_spawner.gd" id="3_spawner"]
+[ext_resource type="Script" path="res://scripts/ground.gd" id="4_ground"]
+[ext_resource type="Script" path="res://scripts/ui.gd" id="5_ui"]
+[ext_resource type="Script" path="res://scripts/sfx.gd" id="6_sfx"]
+[ext_resource type="Script" path="res://scripts/mode_menu.gd" id="7_menu"]
+[ext_resource type="Script" path="res://scripts/ai_overlay.gd" id="8_overlay"]
+[ext_resource type="Script" path="res://scripts/target_marker.gd" id="9_marker"]
+[ext_resource type="Script" path="res://scripts/hunter_drone.gd" id="10_hunter"]
+[ext_resource type="Script" path="res://scripts/net/multiplayer_link.gd" id="11_net"]
+
+[sub_resource type="ProceduralSkyMaterial" id="SkyMat_1"]
+sky_top_color = Color(0.29, 0.55, 0.82, 1)
+sky_horizon_color = Color(0.72, 0.87, 0.95, 1)
+sky_curve = 0.15
+ground_horizon_color = Color(0.72, 0.87, 0.95, 1)
+ground_bottom_color = Color(0.33, 0.6, 0.29, 1)
+
+[sub_resource type="Sky" id="Sky_1"]
+sky_material = SubResource("SkyMat_1")
+
+[sub_resource type="Environment" id="Env_1"]
+background_mode = 2
+sky = SubResource("Sky_1")
+ambient_light_source = 3
+tonemap_mode = 2
+fog_enabled = true
+fog_light_color = Color(0.72, 0.87, 0.95, 1)
+fog_sun_scatter = 0.1
+fog_density = 0.0035
+fog_aerial_perspective = 0.15
+
+[node name="Game" type="Node3D"]
+script = ExtResource("1_game")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Env_1")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 30, 0)
+light_color = Color(1, 0.96, 0.87, 1)
+light_energy = 1.1
+shadow_enabled = true
+
+[node name="Ground" type="Node3D" parent="."]
+script = ExtResource("4_ground")
+
+[node name="ObstacleSpawner" type="Node3D" parent="."]
+script = ExtResource("3_spawner")
+
+[node name="Player" type="Node3D" parent="."]
+script = ExtResource("2_player")
+
+[node name="Sfx" type="Node" parent="."]
+script = ExtResource("6_sfx")
+
+[node name="UI" type="CanvasLayer" parent="."]
+script = ExtResource("5_ui")
+
+[node name="NetLink" type="Node" parent="."]
+script = ExtResource("11_net")
+
+[node name="HunterDrone" type="Node3D" parent="."]
+script = ExtResource("10_hunter")
+
+[node name="TargetMarker" type="Node3D" parent="."]
+visible = false
+script = ExtResource("9_marker")
+
+[node name="AIOverlay" type="CanvasLayer" parent="."]
+layer = 15
+script = ExtResource("8_overlay")
+
+[node name="ModeMenuLayer" type="CanvasLayer" parent="."]
+layer = 20
+
+[node name="ModeMenu" type="Control" parent="ModeMenuLayer"]
+anchor_left = 0.0
+anchor_top = 0.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("7_menu")

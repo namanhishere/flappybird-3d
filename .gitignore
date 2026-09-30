@@ -1,0 +1,12 @@
+# Godot's import cache and per-machine editor state.
+.godot/
+
+# Build outputs and captured logs.
+build/
+
+# Editor / OS noise.
+*.tmp
+.DS_Store
+
+
+docs/
